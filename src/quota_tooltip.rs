@@ -34,6 +34,7 @@ struct State {
     regions: Vec<(RECT, String)>,
     style: Style,
     hover: Option<usize>,
+    point: Option<POINT>,
     text: String,
 }
 static STATE: Mutex<State> = Mutex::new(State {
@@ -47,6 +48,7 @@ static STATE: Mutex<State> = Mutex::new(State {
         font_px: 12,
     },
     hover: None,
+    point: None,
     text: String::new(),
 });
 
@@ -95,7 +97,13 @@ pub fn sync(owner: HWND, regions: Vec<(RECT, String)>, style: Style) {
         state.owner = owner.0 as isize;
         state.style = style;
         state.regions = regions;
-        state.hover = state.hover.filter(|&index| index < state.regions.len());
+        if state.hover.is_some() {
+            state.hover = state.point.and_then(|point| {
+                state.regions.iter().position(|(r, _)| {
+                    point.x >= r.left && point.x < r.right && point.y >= r.top && point.y < r.bottom
+                })
+            });
+        }
         (old_font, state.hover.is_some(), state.window)
     };
     unsafe {
@@ -123,6 +131,7 @@ pub fn mouse_move(owner: HWND, point: POINT) {
         });
         let changed = state.hover != next;
         state.hover = next;
+        state.point = Some(point);
         changed
     };
     if changed {
@@ -139,7 +148,11 @@ pub fn mouse_move(owner: HWND, point: POINT) {
 }
 
 pub fn hide() {
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).hover = None;
+    {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.hover = None;
+        state.point = None;
+    }
     hide_window();
 }
 
@@ -477,10 +490,10 @@ mod tests {
             .unwrap();
             let _ = ShowWindow(owner, SW_SHOWNOACTIVATE);
             let row = RECT {
-                left: 30,
-                top: 0,
-                right: 280,
-                bottom: 48,
+                left: 145,
+                top: 17,
+                right: 193,
+                bottom: 31,
             };
             sync(
                 owner,
@@ -488,6 +501,13 @@ mod tests {
                 Style::default(),
             );
             mouse_move(owner, POINT { x: 60, y: 20 });
+            show();
+            assert_eq!(
+                STATE.lock().unwrap().window,
+                0,
+                "bar/percentage must not open a popup"
+            );
+            mouse_move(owner, POINT { x: 150, y: 20 });
             let foreground = GetForegroundWindow();
             show();
             let window = HWND(STATE.lock().unwrap().window as *mut _);
@@ -501,6 +521,9 @@ mod tests {
             let mut bounds = RECT::default();
             GetWindowRect(window, &mut bounds).unwrap();
             assert_eq!(bounds.bottom, 488);
+            assert!(
+                ((bounds.left + bounds.right) / 2 - (100 + (row.left + row.right) / 2)).abs() <= 1
+            );
             assert_eq!(GetForegroundWindow(), foreground);
             assert_eq!(
                 SendMessageW(window, WM_NCHITTEST, WPARAM(0), LPARAM(0)).0,
@@ -560,9 +583,18 @@ mod tests {
             ReleaseDC(owner, screen);
             mouse_move(owner, POINT { x: 0, y: 20 });
             assert!(!IsWindowVisible(window).as_bool());
-            mouse_move(owner, POINT { x: 60, y: 20 });
+            mouse_move(owner, POINT { x: 150, y: 20 });
             show();
             assert!(IsWindowVisible(window).as_bool());
+            sync(
+                owner,
+                vec![(RECT { left: 170, ..row }, "Sun 10/18/26 12:52AM".into())],
+                light,
+            );
+            assert!(
+                !IsWindowVisible(window).as_bool(),
+                "changed countdown bounds must recheck the hover point"
+            );
             sync(owner, Vec::new(), light);
             assert!(!IsWindowVisible(window).as_bool());
             hide();

@@ -685,40 +685,72 @@ fn reset_hover_regions(
     left: i32,
     width: i32,
     height: i32,
+    appearance: Appearance,
     data: &crate::models::UsageData,
-    session: bool,
-    weekly: bool,
+    session: Option<&str>,
+    weekly: Option<&str>,
 ) -> Vec<(RECT, String)> {
     let mut regions = Vec::new();
-    for (visible, section, top, bottom) in [
-        (
-            session,
-            &data.session,
-            0,
-            if weekly { height / 2 } else { height },
-        ),
-        (
-            weekly,
-            &data.weekly,
-            if session { height / 2 } else { 0 },
-            height,
-        ),
-    ] {
-        if visible {
-            if let Some(text) = format_hover_reset_time(section.resets_at) {
-                regions.push((
+    let (row1_y, row2_y, single_row_y) = quota_row_positions(height, appearance);
+    unsafe {
+        let dc = GetDC(HWND::default());
+        if dc.is_invalid() {
+            return regions;
+        }
+        for (value, section, top) in [
+            (
+                session,
+                &data.session,
+                if weekly.is_some() {
+                    row1_y
+                } else {
+                    single_row_y
+                },
+            ),
+            (
+                weekly,
+                &data.weekly,
+                if session.is_some() {
+                    row2_y
+                } else {
+                    single_row_y
+                },
+            ),
+        ] {
+            if let (Some(value), Some(text)) = (value, format_hover_reset_time(section.resets_at)) {
+                if let Some(rect) = quota_text::reset_bounds(
+                    dc,
                     RECT {
                         left,
                         top,
                         right: left + width,
-                        bottom,
+                        bottom: top + appearance.row_height(),
                     },
-                    text,
-                ));
+                    value,
+                    appearance.font_px(),
+                    sc,
+                ) {
+                    regions.push((rect, text));
+                }
             }
         }
+        ReleaseDC(HWND::default(), dc);
     }
     regions
+}
+
+fn quota_row_positions(height: i32, appearance: Appearance) -> (i32, i32, i32) {
+    let gap = if height < sc(WIDGET_HEIGHT) {
+        sc(2)
+    } else {
+        sc(8)
+    };
+    let first = (height - 2 * appearance.row_height() - gap).max(0) / 2;
+    (
+        first,
+        first + appearance.row_height() + gap,
+        (height - appearance.row_height()) / 2,
+    )
 }
 
 fn service_tooltip(
@@ -2275,7 +2307,7 @@ pub fn run() {
     }
 }
 
-/// Each quota row has one compact reset timestamp on hover.
+/// Only the visible countdown text opens the reset timestamp popup.
 fn update_quota_tooltips() {
     let (hwnd, regions, style) = {
         let state = lock_state();
@@ -2293,22 +2325,28 @@ fn update_quota_tooltips() {
             let height = bounds
                 .map(|r| r.bottom - r.top)
                 .unwrap_or(sc(WIDGET_HEIGHT));
-            for (id, visible) in [
-                (0, s.show_claude_code),
-                (1, s.show_codex),
-                (2, s.show_antigravity),
+            for (id, visible, session_text, weekly_text) in [
+                (0, s.show_claude_code, &s.session_text, &s.weekly_text),
+                (1, s.show_codex, &s.codex_session_text, &s.codex_weekly_text),
+                (
+                    2,
+                    s.show_antigravity,
+                    &s.antigravity_session_text,
+                    &s.antigravity_weekly_text,
+                ),
             ] {
                 if !visible {
                     continue;
                 }
                 if let Some(data) = s.monitor.services[id].data.as_ref() {
                     regions.extend(reset_hover_regions(
-                        left,
-                        width,
+                        left + width - text_width,
+                        text_width,
                         height,
+                        s.appearance,
                         data,
-                        s.show_session_window,
-                        s.show_weekly_window,
+                        s.show_session_window.then_some(session_text.as_str()),
+                        s.show_weekly_window.then_some(weekly_text.as_str()),
                     ));
                 }
                 left += width + sc(MODEL_RIGHT_MARGIN);
@@ -2628,14 +2666,7 @@ fn paint_content(
         let _ = DeleteObject(right_brush);
 
         let content_x = sc(LEFT_DIVIDER_W) + sc(DIVIDER_RIGHT_MARGIN);
-        let row_gap = if height < sc(WIDGET_HEIGHT) {
-            sc(2)
-        } else {
-            sc(8)
-        };
-        let row1_y = (height - 2 * appearance.row_height() - row_gap).max(0) / 2;
-        let row2_y = row1_y + appearance.row_height() + row_gap;
-        let single_row_y = (height - appearance.row_height()) / 2;
+        let (row1_y, row2_y, single_row_y) = quota_row_positions(height, appearance);
 
         let _ = SetBkMode(hdc, TRANSPARENT);
         let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
@@ -5014,20 +5045,58 @@ mod tests {
                 resets_at: Some(UNIX_EPOCH + Duration::from_secs(1792400000)),
             },
         };
-        let weekly = reset_hover_regions(20, 200, 48, &data, false, true);
+        let weekly = reset_hover_regions(
+            20,
+            200,
+            48,
+            Appearance::default(),
+            &data,
+            None,
+            Some("96% · 5d 14h"),
+        );
         assert_eq!(weekly.len(), 1);
         assert_eq!(
             weekly[0].1,
             format_hover_reset_time(data.weekly.resets_at).unwrap()
         );
-        assert_eq!((weekly[0].0.top, weekly[0].0.bottom), (0, 48));
-        let both = reset_hover_regions(20, 200, 48, &data, true, true);
+        let rect = weekly[0].0;
+        assert_eq!(rect.left, 20 + sc(quota_text::reset_offset(12)));
+        assert!(rect.right > rect.left + sc(20) && rect.right < 220);
+        assert!(rect.top > 0 && rect.bottom < 48);
+        let both = reset_hover_regions(
+            20,
+            200,
+            48,
+            Appearance::default(),
+            &data,
+            Some("87% · 2h 34m"),
+            Some("96% · 5d 14h"),
+        );
         assert_eq!(both.len(), 2);
-        assert_eq!((both[0].0.top, both[0].0.bottom), (0, 24));
-        assert_eq!((both[1].0.top, both[1].0.bottom), (24, 48));
+        assert!(both[0].0.bottom < both[1].0.top);
+        assert!(both[0].0.bottom <= 24 && both[1].0.top >= 24);
         assert!(!both[0].1.contains('\n'));
         assert_eq!(format_hover_reset_time(None), None);
-        assert!(reset_hover_regions(20, 200, 48, &Default::default(), true, true).is_empty());
+        assert!(reset_hover_regions(
+            20,
+            200,
+            48,
+            Appearance::default(),
+            &Default::default(),
+            Some("--"),
+            Some("--")
+        )
+        .is_empty());
+        assert!(reset_hover_regions(
+            20,
+            200,
+            48,
+            Appearance::default(),
+            &data,
+            Some("--"),
+            Some("--")
+        )
+        .is_empty());
     }
 
     #[test]
