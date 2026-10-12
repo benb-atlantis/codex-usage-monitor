@@ -12,6 +12,7 @@ use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW
 use windows::Win32::System::Registry::*;
 use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
+use windows::Win32::UI::Controls::{WM_MOUSEHOVER, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::ExtractIconExW;
@@ -2313,13 +2314,13 @@ fn update_quota_tooltips() {
                 left += width + sc(MODEL_RIGHT_MARGIN);
             }
         }
-        let (background, _, _) = appearance_colors(s.appearance, s.is_dark);
+        let dark = s.appearance.is_dark(s.is_dark);
         (
             s.hwnd.to_hwnd(),
             regions,
             quota_tooltip::Style {
-                background: background.to_colorref(),
-                text: reset_text_color(s.appearance, s.is_dark).to_colorref(),
+                background: if dark { 0x2b2b2b } else { 0xf9f9f9 },
+                text: if dark { 0xffffff } else { 0x1a1a1a },
                 font_px: sc(s.appearance.font_px()),
             },
         )
@@ -3257,6 +3258,20 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_MOUSEHOVER => {
+            quota_tooltip::show();
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            quota_tooltip::hide();
+            LRESULT(0)
+        }
+        WM_SHOWWINDOW => {
+            if wparam.0 == 0 {
+                quota_tooltip::hide();
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         taskbar_widgets::WM_WIDGETS_CHANGED => {
             position_at_taskbar();
             render_layered();
@@ -3364,6 +3379,7 @@ unsafe extern "system" fn wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_LBUTTONDOWN => {
+            quota_tooltip::hide();
             let client_x = (lparam.0 & 0xFFFF) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
             if !is_drag_handle_point(client_x, client_y) {
@@ -3391,6 +3407,7 @@ unsafe extern "system" fn wnd_proc(
                 state.as_ref().map(|s| s.dragging).unwrap_or(false)
             };
             if is_dragging {
+                quota_tooltip::hide();
                 let mut pt = POINT::default();
                 let _ = GetCursorPos(&mut pt);
                 let move_target = {
@@ -3469,6 +3486,14 @@ unsafe extern "system" fn wnd_proc(
                         native_interop::move_window(hwnd_val, x, y, widget_width, widget_height);
                     }
                 }
+            } else {
+                quota_tooltip::mouse_move(
+                    hwnd,
+                    POINT {
+                        x: (lparam.0 & 0xFFFF) as i16 as i32,
+                        y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                    },
+                );
             }
             LRESULT(0)
         }
@@ -3920,6 +3945,7 @@ unsafe fn append_appearance_submenu(parent: HMENU, child: HMENU, label: &str) {
 }
 
 fn show_context_menu(hwnd: HWND) {
+    quota_tooltip::hide();
     unsafe {
         let (
             current_interval,

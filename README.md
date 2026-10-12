@@ -34,7 +34,7 @@ It sits in your taskbar and shows how much of your Codex usage window remains wi
 - Claude and OpenAI marks for each service column, with Codex shown in green
 - Quota windows that a service does not report show `--` and an empty bar instead of a false 100%
 - Each service refreshes and retries on its own; a failed refresh keeps the last numbers and marks them `*`
-- Hover over a service column to see its last successful update, next refresh, and any error
+- Hover over a quota row to see its exact local reset date and time
 - Automatic refresh after the computer wakes from sleep or the network comes back
 
 ## Who This Is For
@@ -125,7 +125,7 @@ Hovering over the tray icon shows a compact summary for all enabled services. Le
 
 Use the right-click **Usage display** menu to show both quota rows or only one. The app always keeps at least one row visible. Choose **Show usage used** or **Show usage remaining** to control both the percentage and bar fill; the choice is saved independently of language.
 
-Day countdowns include hours, for example `5d 15h`. Hover over a quota row to see only its exact local reset time, such as `Thu 10/15/26 8:52AM`, using the widget's colors and font. Continuous and segmented bars use antialiased rounded tracks and fill ends.
+Day countdowns include hours, for example `5d 15h`. Hover over a quota row to see only its exact local reset time, such as `Thu 10/15/26 8:52AM`. The compact Segoe UI popup follows the selected light or dark palette and appears centered above the row, with a small taskbar gap. Windows 11 supplies softly rounded corners and a shadow. Continuous and segmented bars use antialiased rounded tracks and fill ends.
 
 Use **Quota alerts** to choose a remaining-quota threshold of 10%, 20%, or 30%. Alerts are off by default. Each provider and quota window is notified only once until its reset time changes, including across app restarts.
 
