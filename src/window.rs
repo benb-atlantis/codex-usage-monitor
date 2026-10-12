@@ -655,29 +655,69 @@ fn format_local_system_time(local: SYSTEMTIME) -> String {
     )
 }
 
-fn reset_tooltip_details(
+fn format_hover_reset_time(resets_at: Option<SystemTime>) -> Option<String> {
+    Some(format_hover_system_time(
+        native_interop::system_time_to_local(resets_at?)?,
+    ))
+}
+
+fn format_hover_system_time(local: SYSTEMTIME) -> String {
+    let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        .get(local.wDayOfWeek as usize)
+        .copied()
+        .unwrap_or("?");
+    let hour = match local.wHour % 12 {
+        0 => 12,
+        hour => hour,
+    };
+    format!(
+        "{weekday} {:02}/{:02}/{:02} {hour}:{:02}{}",
+        local.wMonth,
+        local.wDay,
+        local.wYear % 100,
+        local.wMinute,
+        if local.wHour < 12 { "AM" } else { "PM" }
+    )
+}
+
+fn reset_hover_regions(
+    left: i32,
+    width: i32,
+    height: i32,
     data: &crate::models::UsageData,
     session: bool,
     weekly: bool,
-    remaining: bool,
-) -> String {
-    let mut lines = vec![if remaining {
-        "Showing usage remaining"
-    } else {
-        "Showing usage used"
-    }
-    .to_string()];
-    for (visible, label, section) in [
-        (session, "5-hour", &data.session),
-        (weekly, "Weekly", &data.weekly),
+) -> Vec<(RECT, String)> {
+    let mut regions = Vec::new();
+    for (visible, section, top, bottom) in [
+        (
+            session,
+            &data.session,
+            0,
+            if weekly { height / 2 } else { height },
+        ),
+        (
+            weekly,
+            &data.weekly,
+            if session { height / 2 } else { 0 },
+            height,
+        ),
     ] {
         if visible {
-            if let Some(reset) = format_precise_reset_time(section.resets_at) {
-                lines.push(format!("{label} resets: {reset} (local time)"));
+            if let Some(text) = format_hover_reset_time(section.resets_at) {
+                regions.push((
+                    RECT {
+                        left,
+                        top,
+                        right: left + width,
+                        bottom,
+                    },
+                    text,
+                ));
             }
         }
     }
-    lines.join("\n")
+    regions
 }
 
 fn service_tooltip(
@@ -2234,14 +2274,13 @@ pub fn run() {
     }
 }
 
-/// Keep missing-window explanations aligned with the Codex quota cells.
+/// Each quota row has one compact reset timestamp on hover.
 fn update_quota_tooltips() {
-    let (hwnd, regions) = {
+    let (hwnd, regions, style) = {
         let state = lock_state();
         let Some(s) = state.as_ref() else { return };
         let mut regions = Vec::new();
         if !s.dragging {
-            let chinese = s.language == LanguageId::SimplifiedChinese;
             let count = active_model_count(s.show_claude_code, s.show_codex, s.show_antigravity);
             let (label_width, text_width) = usage_layout_widths(s.language, s.appearance);
             let width = model_usage_width(row_bar_segment_count(count), text_width);
@@ -2249,74 +2288,43 @@ fn update_quota_tooltips() {
                 + sc(DIVIDER_RIGHT_MARGIN)
                 + label_width
                 + sc(LABEL_RIGHT_MARGIN);
-            for (id, visible, name, session, weekly) in [
-                (
-                    0,
-                    s.show_claude_code,
-                    "Claude Code",
-                    &s.session_text,
-                    &s.weekly_text,
-                ),
-                (
-                    1,
-                    s.show_codex,
-                    "Codex",
-                    &s.codex_session_text,
-                    &s.codex_weekly_text,
-                ),
-                (
-                    2,
-                    s.show_antigravity,
-                    "Antigravity",
-                    &s.antigravity_session_text,
-                    &s.antigravity_weekly_text,
-                ),
+            let bounds = native_interop::get_window_rect_safe(s.hwnd.to_hwnd());
+            let height = bounds
+                .map(|r| r.bottom - r.top)
+                .unwrap_or(sc(WIDGET_HEIGHT));
+            for (id, visible) in [
+                (0, s.show_claude_code),
+                (1, s.show_codex),
+                (2, s.show_antigravity),
             ] {
                 if !visible {
                     continue;
                 }
-                let description =
-                    s.monitor.services[id].description(SystemTime::now(), Instant::now(), chinese);
-                let mut text = format!("{name}\n{description}");
                 if let Some(data) = s.monitor.services[id].data.as_ref() {
-                    text.push('\n');
-                    text.push_str(&reset_tooltip_details(
+                    regions.extend(reset_hover_regions(
+                        left,
+                        width,
+                        height,
                         data,
                         s.show_session_window,
                         s.show_weekly_window,
-                        s.usage_display.remaining(s.language),
                     ));
                 }
-                if s.monitor.services[id].error.is_some() && session == "!" {
-                    text.push_str(if chinese {
-                        "\n本服务本次未返回额度。"
-                    } else {
-                        "\nThis provider did not return quota in the latest update."
-                    });
-                }
-                if name == "Codex" && s.monitor.services[id].data.is_some() {
-                    for (missing, is_weekly) in [(session == "--", false), (weekly == "--", true)] {
-                        if missing {
-                            text.push('\n');
-                            text.push_str(quota_tooltip::message(chinese, is_weekly));
-                        }
-                    }
-                }
-                regions.push((
-                    RECT {
-                        left,
-                        top: 0,
-                        right: left + width,
-                        bottom: sc(WIDGET_HEIGHT),
-                    },
-                    text,
-                ));
                 left += width + sc(MODEL_RIGHT_MARGIN);
             }
         }
-        (s.hwnd.to_hwnd(), regions)
+        let (background, _, _) = appearance_colors(s.appearance, s.is_dark);
+        (
+            s.hwnd.to_hwnd(),
+            regions,
+            quota_tooltip::Style {
+                background: background.to_colorref(),
+                text: reset_text_color(s.appearance, s.is_dark).to_colorref(),
+                font_px: sc(s.appearance.font_px()),
+            },
+        )
     };
-    quota_tooltip::sync(hwnd, regions);
+    quota_tooltip::sync(hwnd, regions, style);
 }
 
 /// Render opaque taskbar content with ClearType via UpdateLayeredWindow.
@@ -2882,6 +2890,9 @@ fn complete_provider_poll(
             "provider poll completed id={} error={:?} interval_ms={}",
             job.id, service.error, service.interval_ms
         ));
+        if diagnose::is_enabled() {
+            diagnose::log(service.description(SystemTime::now(), Instant::now(), false));
+        }
         let notice = completion.notify_auth.then(|| {
             let strings = s.language.strings();
             match job.id {
@@ -4816,7 +4827,6 @@ fn draw_usage_bar(
     let seg_h = appearance.bar_height();
     let seg_gap = sc(SEGMENT_GAP);
     let bar_width = segment_count * (seg_w + seg_gap) - seg_gap;
-    let corner_r = seg_h / 2;
     let bar_y = y + (appearance.row_height() - seg_h) / 2;
 
     let percent_clamped = usage_bar_fill_percentage(percent, text);
@@ -4828,10 +4838,9 @@ fn draw_usage_bar(
                 right: bar_x + i * (seg_w + seg_gap) + seg_w,
                 bottom: bar_y + seg_h,
             };
-            draw_rounded_rect(hdc, &rect, track, corner_r);
             let fraction =
                 (percent_clamped * segment_count as f64 / 100.0 - i as f64).clamp(0.0, 1.0);
-            fill_rounded_bar(hdc, &rect, fraction, accent, corner_r);
+            crate::rounded_bars::draw(hdc, rect, fraction, track, accent);
         }
     } else {
         let rect = RECT {
@@ -4840,8 +4849,7 @@ fn draw_usage_bar(
             right: bar_x + bar_width,
             bottom: bar_y + seg_h,
         };
-        draw_rounded_rect(hdc, &rect, track, corner_r);
-        fill_rounded_bar(hdc, &rect, percent_clamped / 100.0, accent, corner_r);
+        crate::rounded_bars::draw(hdc, rect, percent_clamped / 100.0, track, accent);
     }
 
     let text_x = bar_x + bar_width + sc(BAR_RIGHT_MARGIN);
@@ -4857,50 +4865,6 @@ fn draw_usage_bar(
         appearance.font_px(),
         sc,
     );
-}
-
-fn fill_rounded_bar(hdc: HDC, rect: &RECT, fraction: f64, color: &Color, radius: i32) {
-    let width = ((rect.right - rect.left) as f64 * fraction).round() as i32;
-    if width <= 0 {
-        return;
-    }
-    unsafe {
-        let clip = CreateRoundRectRgn(
-            rect.left,
-            rect.top,
-            rect.right + 1,
-            rect.bottom + 1,
-            radius * 2,
-            radius * 2,
-        );
-        let _ = SelectClipRgn(hdc, clip);
-        let fill = RECT {
-            right: rect.left + width,
-            ..*rect
-        };
-        let brush = CreateSolidBrush(COLORREF(color.to_colorref()));
-        FillRect(hdc, &fill, brush);
-        let _ = DeleteObject(brush);
-        let _ = SelectClipRgn(hdc, HRGN::default());
-        let _ = DeleteObject(clip);
-    }
-}
-
-fn draw_rounded_rect(hdc: HDC, rect: &RECT, color: &Color, radius: i32) {
-    unsafe {
-        let brush = CreateSolidBrush(COLORREF(color.to_colorref()));
-        let rgn = CreateRoundRectRgn(
-            rect.left,
-            rect.top,
-            rect.right + 1,
-            rect.bottom + 1,
-            radius * 2,
-            radius * 2,
-        );
-        let _ = FillRgn(hdc, rgn, brush);
-        let _ = DeleteObject(rgn);
-        let _ = DeleteObject(brush);
-    }
 }
 
 #[cfg(test)]
@@ -4991,7 +4955,29 @@ mod tests {
     }
 
     #[test]
-    fn hover_reset_details_include_exact_time_for_visible_windows() {
+    fn hover_is_only_a_compact_reset_timestamp_for_the_hovered_row() {
+        let local = SYSTEMTIME {
+            wYear: 2026,
+            wMonth: 10,
+            wDay: 15,
+            wDayOfWeek: 4,
+            wHour: 8,
+            wMinute: 52,
+            ..Default::default()
+        };
+        assert_eq!(format_hover_system_time(local), "Thu 10/15/26 8:52AM");
+        assert_eq!(
+            format_hover_system_time(SYSTEMTIME {
+                wHour: 0,
+                wMinute: 0,
+                ..local
+            }),
+            "Thu 10/15/26 12:00AM"
+        );
+        assert_eq!(
+            format_hover_system_time(SYSTEMTIME { wHour: 12, ..local }),
+            "Thu 10/15/26 12:52PM"
+        );
         let data = crate::models::UsageData {
             session: crate::models::UsageSection {
                 percentage: 21.0,
@@ -5002,17 +4988,20 @@ mod tests {
                 resets_at: Some(UNIX_EPOCH + Duration::from_secs(1792400000)),
             },
         };
-        let weekly_only = reset_tooltip_details(&data, false, true, true);
-        assert!(weekly_only.contains("Showing usage remaining"));
-        assert!(weekly_only.contains(&format!(
-            "Weekly resets: {} (local time)",
-            format_precise_reset_time(data.weekly.resets_at).unwrap()
-        )));
-        assert!(!weekly_only.contains("5-hour resets"));
-        let session_only = reset_tooltip_details(&data, true, false, false);
-        assert!(session_only.contains("Showing usage used"));
-        assert!(session_only.contains("5-hour resets:"));
-        assert!(!session_only.contains("Weekly resets"));
+        let weekly = reset_hover_regions(20, 200, 48, &data, false, true);
+        assert_eq!(weekly.len(), 1);
+        assert_eq!(
+            weekly[0].1,
+            format_hover_reset_time(data.weekly.resets_at).unwrap()
+        );
+        assert_eq!((weekly[0].0.top, weekly[0].0.bottom), (0, 48));
+        let both = reset_hover_regions(20, 200, 48, &data, true, true);
+        assert_eq!(both.len(), 2);
+        assert_eq!((both[0].0.top, both[0].0.bottom), (0, 24));
+        assert_eq!((both[1].0.top, both[1].0.bottom), (24, 48));
+        assert!(!both[0].1.contains('\n'));
+        assert_eq!(format_hover_reset_time(None), None);
+        assert!(reset_hover_regions(20, 200, 48, &Default::default(), true, true).is_empty());
     }
 
     #[test]

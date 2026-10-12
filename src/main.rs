@@ -12,6 +12,7 @@ mod quota_text;
 mod quota_tooltip;
 mod recovery_events;
 mod retry_after;
+mod rounded_bars;
 mod settings_store;
 mod taskbar_widgets;
 mod theme;

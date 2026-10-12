@@ -125,7 +125,7 @@ Hovering over the tray icon shows a compact summary for all enabled services. Le
 
 Use the right-click **Usage display** menu to show both quota rows or only one. The app always keeps at least one row visible. Choose **Show usage used** or **Show usage remaining** to control both the percentage and bar fill; the choice is saved independently of language.
 
-Day countdowns include hours, for example `5d 15h`. Hover over a service column to see the exact reset date and time in your local time zone, together with the selected used/remaining display mode.
+Day countdowns include hours, for example `5d 15h`. Hover over a quota row to see only its exact local reset time, such as `Thu 10/15/26 8:52AM`, using the widget's colors and font. Continuous and segmented bars use antialiased rounded tracks and fill ends.
 
 Use **Quota alerts** to choose a remaining-quota threshold of 10%, 20%, or 30%. Alerts are off by default. Each provider and quota window is notified only once until its reset time changes, including across app restarts.
 
@@ -143,7 +143,7 @@ Each enabled service keeps its own data, last successful update, error, and retr
 | `*` after the reset text | The latest refresh failed or the data is old. The numbers are from the last successful refresh. |
 | `!`, `NET`, `429`, `5XX`, or `ERR` (Chinese: `!`, `网络`, `限流`, `服务`, `错误`) | The service has not returned data yet since the app started, and the label shows why. |
 
-Hover over a service column to see when it last updated successfully, when it refreshes or retries next, and the latest error. Missing Codex windows also get a short explanation.
+Quota-row hover text shows only the reset timestamp. Use `--diagnose` for update freshness, retry timing, and error details.
 
 Refresh behavior:
 
