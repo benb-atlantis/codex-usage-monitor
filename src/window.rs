@@ -2828,7 +2828,11 @@ fn do_poll(send_hwnd: SendHwnd) {
         let Some(s) = state.as_mut() else {
             return;
         };
-        s.monitor.plan(Instant::now())
+        let (jobs, delay) = s.monitor.wake(Instant::now(), s.poll_interval_ms);
+        unsafe {
+            SetTimer(send_hwnd.to_hwnd(), TIMER_POLL, delay, None);
+        }
+        jobs
     };
     if !jobs.is_empty() {
         unsafe {
