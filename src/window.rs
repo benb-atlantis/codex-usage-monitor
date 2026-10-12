@@ -1005,13 +1005,56 @@ fn taskbar_at_point(pt: POINT) -> Option<(usize, native_interop::TaskbarWindow)>
 }
 
 fn tray_left_for_taskbar(taskbar_hwnd: HWND, taskbar_rect: RECT) -> i32 {
-    let mut tray_left = taskbar_rect.right;
-    if let Some(tray_hwnd) = native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd") {
-        if let Some(tray_rect) = native_interop::get_window_rect_safe(tray_hwnd) {
-            tray_left = tray_rect.left;
+    for class in ["TrayNotifyWnd", "ClockButton", "TrayClockWClass"] {
+        if let Some(area_rect) = native_interop::find_child_window(taskbar_hwnd, class)
+            .and_then(native_interop::get_window_rect_safe)
+        {
+            if let Some(left) = notification_area_left(taskbar_rect, area_rect) {
+                return left;
+            }
         }
     }
-    tray_left
+
+    // Windows 11 secondary taskbars can compose the clock without exposing a
+    // TrayNotifyWnd or clock HWND. Reuse the primary tray's width, scaled for
+    // this taskbar's height, rather than placing the widget over the clock.
+    let primary_area = native_interop::find_taskbars()
+        .into_iter()
+        .find(|taskbar| taskbar.is_primary)
+        .and_then(|primary| {
+            let area = native_interop::find_child_window(primary.hwnd, "TrayNotifyWnd")
+                .and_then(native_interop::get_window_rect_safe)?;
+            notification_area_left(primary.rect, area)?;
+            Some((
+                area.right - area.left,
+                primary.rect.bottom - primary.rect.top,
+            ))
+        });
+    let height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
+    let reserved_width = fallback_notification_width(height, primary_area);
+    (taskbar_rect.right - reserved_width).max(taskbar_rect.left)
+}
+
+fn notification_area_left(taskbar: RECT, area: RECT) -> Option<i32> {
+    (area.left >= taskbar.left
+        && area.left < area.right
+        && area.right <= taskbar.right
+        && area.top < area.bottom
+        && area.top < taskbar.bottom
+        && area.bottom > taskbar.top)
+        .then_some(area.left)
+}
+
+fn fallback_notification_width(height: i32, primary_area: Option<(i32, i32)>) -> i32 {
+    // Leave a conservative clock-sized area when the primary tray is absent
+    // too (for example while Explorer is rebuilding its taskbars).
+    let minimum = height.saturating_mul(4);
+    primary_area
+        .filter(|&(width, primary_height)| width > 0 && primary_height > 0)
+        .map(|(width, primary_height)| {
+            ((width as f64 * height as f64 / primary_height as f64).ceil() as i32).max(minimum)
+        })
+        .unwrap_or(minimum)
 }
 
 fn clamp_offset_for_taskbar(taskbar_hwnd: HWND, taskbar_rect: RECT, offset: i32) -> i32 {
@@ -2948,15 +2991,9 @@ fn position_at_taskbar() {
     };
 
     let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
-    let mut tray_left = taskbar_rect.right;
+    let tray_left = tray_left_for_taskbar(taskbar_hwnd, taskbar_rect);
     let anchor_top = taskbar_rect.top;
     let anchor_height = taskbar_height;
-
-    if let Some(tray_hwnd) = native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd") {
-        if let Some(tray_rect) = native_interop::get_window_rect_safe(tray_hwnd) {
-            tray_left = tray_rect.left;
-        }
-    }
 
     let widget_width = total_widget_width();
     let max_offset = (tray_left - taskbar_rect.left - widget_width).max(0);
@@ -3279,16 +3316,7 @@ unsafe extern "system" fn wnd_proc(
                     // Clamp: don't go past left edge of taskbar
                     if let Some(taskbar_hwnd) = taskbar_hwnd {
                         if let Some(taskbar_rect) = native_interop::get_taskbar_rect(taskbar_hwnd) {
-                            let mut tray_left = taskbar_rect.right;
-                            if let Some(tray_hwnd) =
-                                native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd")
-                            {
-                                if let Some(tray_rect) =
-                                    native_interop::get_window_rect_safe(tray_hwnd)
-                                {
-                                    tray_left = tray_rect.left;
-                                }
-                            }
+                            let tray_left = tray_left_for_taskbar(taskbar_hwnd, taskbar_rect);
                             let widget_width = total_widget_width_for_state(s);
                             let max_offset = (tray_left - taskbar_rect.left - widget_width).max(0);
                             if new_offset > max_offset {
@@ -4946,6 +4974,111 @@ mod tests {
             poll_error_display_label(poller::PollError::RequestFailed, LanguageId::English),
             "ERR"
         );
+    }
+
+    #[test]
+    fn notification_area_bounds_preserve_primary_tray_and_reject_other_monitors() {
+        let taskbar = RECT {
+            left: 432,
+            top: -48,
+            right: 2992,
+            bottom: 0,
+        };
+        let clock = RECT {
+            left: 2850,
+            top: -48,
+            right: 2992,
+            bottom: 0,
+        };
+        assert_eq!(notification_area_left(taskbar, clock), Some(2850));
+        assert_eq!(
+            notification_area_left(
+                taskbar,
+                RECT {
+                    top: 1392,
+                    bottom: 1440,
+                    ..clock
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            notification_area_left(
+                taskbar,
+                RECT {
+                    left: 3000,
+                    right: 3100,
+                    ..clock
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            notification_area_left(
+                taskbar,
+                RECT {
+                    right: 3000,
+                    ..clock
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            notification_area_left(
+                taskbar,
+                RECT {
+                    left: 2992,
+                    ..clock
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn composed_clock_reservation_scales_with_taskbar_height() {
+        assert_eq!(fallback_notification_width(48, Some((274, 48))), 274);
+        assert_eq!(fallback_notification_width(72, Some((274, 48))), 411);
+        assert_eq!(fallback_notification_width(48, Some((100, 48))), 192);
+        assert_eq!(fallback_notification_width(48, None), 192);
+        assert_eq!(fallback_notification_width(48, Some((274, 0))), 192);
+    }
+
+    #[test]
+    fn secondary_taskbar_without_tray_keeps_widget_clear_of_clock() {
+        // Windows 11 secondary taskbars render the clock in a composition
+        // bridge, without a TrayNotifyWnd or a separate clock HWND.
+        unsafe {
+            let taskbar = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                windows::core::w!("STATIC"),
+                windows::core::w!("secondary-taskbar-placement-test"),
+                WS_POPUP,
+                432,
+                -48,
+                2560,
+                48,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let rect = RECT {
+                left: 432,
+                top: -48,
+                right: 2992,
+                bottom: 0,
+            };
+            let content_right = tray_left_for_taskbar(taskbar, rect);
+            let widget_left = compute_anchor_x(rect.left, content_right, 287, 0, false);
+            let _ = DestroyWindow(taskbar);
+            assert!(
+                widget_left + 287 <= rect.right - 192,
+                "widget must leave space for the composed secondary clock; right edge was {}",
+                widget_left + 287
+            );
+        }
     }
 
     #[test]

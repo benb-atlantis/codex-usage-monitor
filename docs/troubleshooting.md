@@ -39,6 +39,13 @@ Direct installations and portable copies download only the exact `codex-usage.ex
 
 Right-click the taskbar component and choose **Settings > Reset Position**. Settings are stored at `%APPDATA%\CodexUsage\settings.json`.
 
+On Windows 11 secondary monitors, the clock may be composed without a separate
+notification-area window. Codex Usage reserves space using the primary tray's
+width, scaled to the selected taskbar's height, with a conservative fallback if
+the primary tray is unavailable. Resetting or switching displays therefore keeps
+the widget out of the clock area. Drag the left divider to move it farther left;
+left-edge pinning still uses the taskbar's far left edge.
+
 ## Reinstall while preserving settings
 
 Normal uninstall keeps the settings file. Reinstalling restores the saved language, refresh interval, provider selection, widget visibility, and taskbar position. Use `uninstall.ps1 -RemoveSettings` only when a full reset is intended.
