@@ -44,7 +44,10 @@ notification-area window. Codex Usage reserves space using the primary tray's
 width, scaled to the selected taskbar's height, with a conservative fallback if
 the primary tray is unavailable. Resetting or switching displays therefore keeps
 the widget out of the clock area. Drag the left divider to move it farther left;
-left-edge pinning still uses the taskbar's far left edge.
+left-edge pinning leaves a gap after the existing Windows weather/Widgets button.
+Its actual bounds are checked in the background, so pinning follows changes in
+the button's width and returns to the far left when the button is hidden. If
+Windows cannot expose those bounds, a conservative initial gap is retained.
 
 ## Reinstall while preserving settings
 

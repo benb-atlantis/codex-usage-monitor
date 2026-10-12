@@ -123,7 +123,9 @@ Hovering over the tray icon shows a compact summary for all enabled services. Le
 
 ### Usage Display And Alerts
 
-Use the right-click **Usage display** menu to show both quota rows or only one. The app always keeps at least one row visible.
+Use the right-click **Usage display** menu to show both quota rows or only one. The app always keeps at least one row visible. Choose **Show usage used** or **Show usage remaining** to control both the percentage and bar fill; the choice is saved independently of language.
+
+Day countdowns include hours, for example `5d 15h`. Hover over a service column to see the exact reset date and time in your local time zone, together with the selected used/remaining display mode.
 
 Use **Quota alerts** to choose a remaining-quota threshold of 10%, 20%, or 30%. Alerts are off by default. Each provider and quota window is notified only once until its reset time changes, including across app restarts.
 

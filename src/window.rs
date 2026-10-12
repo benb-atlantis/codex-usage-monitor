@@ -32,6 +32,7 @@ use crate::quota_text;
 use crate::quota_tooltip;
 use crate::recovery_events;
 use crate::settings_store;
+use crate::taskbar_widgets;
 use crate::theme;
 use crate::tray_icon;
 use crate::updater::{self, InstallChannel, ReleaseDescriptor, UpdateCheckResult};
@@ -82,6 +83,7 @@ struct AppState {
     show_antigravity: bool,
     show_session_window: bool,
     show_weekly_window: bool,
+    usage_display: UsageDisplay,
     alert_threshold_percent: u8,
     notified_quota_windows: BTreeSet<String>,
 
@@ -149,6 +151,8 @@ const IDM_MODEL_CODEX: u16 = 61;
 const IDM_MODEL_ANTIGRAVITY: u16 = 62;
 const IDM_SHOW_SESSION_WINDOW: u16 = 71;
 const IDM_SHOW_WEEKLY_WINDOW: u16 = 72;
+const IDM_USAGE_USED: u16 = 73;
+const IDM_USAGE_REMAINING: u16 = 74;
 const IDM_ALERT_OFF: u16 = 80;
 const IDM_ALERT_10: u16 = 81;
 const IDM_ALERT_20: u16 = 82;
@@ -422,6 +426,21 @@ impl Appearance {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum UsageDisplay {
+    #[default]
+    Auto,
+    Used,
+    Remaining,
+}
+
+impl UsageDisplay {
+    fn remaining(self, language: LanguageId) -> bool {
+        self == Self::Remaining || (self == Self::Auto && language == LanguageId::SimplifiedChinese)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SettingsFile {
     #[serde(default)]
@@ -455,6 +474,8 @@ struct SettingsFile {
     #[serde(default = "default_show_usage_window")]
     show_weekly_window: bool,
     #[serde(default)]
+    usage_display: UsageDisplay,
+    #[serde(default)]
     alert_threshold_percent: u8,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notified_quota_windows: Vec<String>,
@@ -478,6 +499,7 @@ impl Default for SettingsFile {
             show_antigravity: false,
             show_session_window: true,
             show_weekly_window: true,
+            usage_display: UsageDisplay::Auto,
             alert_threshold_percent: 0,
             notified_quota_windows: Vec::new(),
         }
@@ -611,6 +633,7 @@ fn save_state_settings() {
             show_antigravity: s.show_antigravity,
             show_session_window: s.show_session_window,
             show_weekly_window: s.show_weekly_window,
+            usage_display: s.usage_display,
             alert_threshold_percent: s.alert_threshold_percent,
             notified_quota_windows: s.notified_quota_windows.iter().cloned().collect(),
         })
@@ -630,6 +653,31 @@ fn format_local_system_time(local: SYSTEMTIME) -> String {
         "{:04}-{:02}-{:02} {:02}:{:02}",
         local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute
     )
+}
+
+fn reset_tooltip_details(
+    data: &crate::models::UsageData,
+    session: bool,
+    weekly: bool,
+    remaining: bool,
+) -> String {
+    let mut lines = vec![if remaining {
+        "Showing usage remaining"
+    } else {
+        "Showing usage used"
+    }
+    .to_string()];
+    for (visible, label, section) in [
+        (session, "5-hour", &data.session),
+        (weekly, "Weekly", &data.weekly),
+    ] {
+        if visible {
+            if let Some(reset) = format_precise_reset_time(section.resets_at) {
+                lines.push(format!("{label} resets: {reset} (local time)"));
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 fn service_tooltip(
@@ -1126,7 +1174,8 @@ fn effective_poll_interval(state: &AppState) -> u32 {
 
 fn refresh_usage_texts(state: &mut AppState) {
     let strings = state.language.strings();
-    let show_remaining = state.language == LanguageId::SimplifiedChinese;
+    let chinese = state.language == LanguageId::SimplifiedChinese;
+    let show_remaining = state.usage_display.remaining(state.language);
     let Some(data) = state.data.as_ref() else {
         return;
     };
@@ -1135,12 +1184,14 @@ fn refresh_usage_texts(state: &mut AppState) {
         state.session_text = poller::format_line(
             &claude_code.session,
             strings,
+            chinese,
             show_remaining,
             poller::UsageWindowKind::Session,
         );
         state.weekly_text = poller::format_line(
             &claude_code.weekly,
             strings,
+            chinese,
             show_remaining,
             poller::UsageWindowKind::Weekly,
         );
@@ -1157,12 +1208,14 @@ fn refresh_usage_texts(state: &mut AppState) {
         state.codex_session_text = poller::format_codex_line(
             &codex.session,
             strings,
+            chinese,
             show_remaining,
             poller::UsageWindowKind::Session,
         );
         state.codex_weekly_text = poller::format_codex_line(
             &codex.weekly,
             strings,
+            chinese,
             show_remaining,
             poller::UsageWindowKind::Weekly,
         );
@@ -1179,6 +1232,7 @@ fn refresh_usage_texts(state: &mut AppState) {
         state.antigravity_session_text = poller::format_line(
             &antigravity.session,
             strings,
+            chinese,
             show_remaining,
             poller::UsageWindowKind::Session,
         );
@@ -1189,6 +1243,7 @@ fn refresh_usage_texts(state: &mut AppState) {
                 poller::format_line(
                     &antigravity.weekly,
                     strings,
+                    chinese,
                     show_remaining,
                     poller::UsageWindowKind::Weekly,
                 )
@@ -1715,6 +1770,10 @@ fn usage_layout_samples(language: LanguageId) -> (Vec<&'static str>, Vec<String>
         ]
         .into_iter()
         .map(|suffix| format!("99{suffix} *"))
+        .chain(std::iter::once(format!(
+            "99{} 23{} *",
+            strings.day_suffix, strings.hour_suffix
+        )))
         .chain(std::iter::once(format!("{} *", strings.now)))
         .collect()
     };
@@ -1799,12 +1858,8 @@ fn usage_layout_widths(language: LanguageId, appearance: Appearance) -> (i32, i3
     }
 }
 
-fn usage_percent_for_display(language: LanguageId, used_percentage: f64) -> f64 {
-    if language == LanguageId::SimplifiedChinese {
-        poller::remaining_percentage(used_percentage)
-    } else {
-        used_percentage.clamp(0.0, 100.0)
-    }
+fn usage_percent_for_display(show_remaining: bool, used_percentage: f64) -> f64 {
+    poller::display_percentage(used_percentage, show_remaining)
 }
 
 fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: Appearance) -> i32 {
@@ -2061,6 +2116,7 @@ pub fn run() {
                 show_antigravity: settings.show_antigravity,
                 show_session_window: settings.show_session_window,
                 show_weekly_window: settings.show_weekly_window,
+                usage_display: settings.usage_display,
                 alert_threshold_percent: settings.alert_threshold_percent,
                 notified_quota_windows: settings.notified_quota_windows.into_iter().collect(),
                 data: None,
@@ -2222,6 +2278,15 @@ fn update_quota_tooltips() {
                 let description =
                     s.monitor.services[id].description(SystemTime::now(), Instant::now(), chinese);
                 let mut text = format!("{name}\n{description}");
+                if let Some(data) = s.monitor.services[id].data.as_ref() {
+                    text.push('\n');
+                    text.push_str(&reset_tooltip_details(
+                        data,
+                        s.show_session_window,
+                        s.show_weekly_window,
+                        s.usage_display.remaining(s.language),
+                    ));
+                }
                 if s.monitor.services[id].error.is_some() && session == "!" {
                     text.push_str(if chinese {
                         "\n本服务本次未返回额度。"
@@ -2263,6 +2328,7 @@ fn render_layered() {
         is_dark,
         embedded,
         language,
+        show_remaining,
         appearance,
         strings,
         session_pct,
@@ -2290,6 +2356,7 @@ fn render_layered() {
                 s.is_dark,
                 s.embedded,
                 s.language,
+                s.usage_display.remaining(s.language),
                 s.appearance,
                 s.language.strings(),
                 s.session_percent,
@@ -2383,6 +2450,7 @@ fn render_layered() {
             &accent,
             &track,
             language,
+            show_remaining,
             strings,
             session_pct,
             &session_text,
@@ -2468,6 +2536,7 @@ fn paint_content(
     accent: &Color,
     track: &Color,
     language: LanguageId,
+    show_remaining: bool,
     strings: Strings,
     session_pct: f64,
     session_text: &str,
@@ -2491,12 +2560,14 @@ fn paint_content(
 ) {
     unsafe {
         let is_dark = appearance.is_dark(is_dark);
-        let session_pct = usage_percent_for_display(language, session_pct);
-        let weekly_pct = usage_percent_for_display(language, weekly_pct);
-        let codex_session_pct = usage_percent_for_display(language, codex_session_pct);
-        let codex_weekly_pct = usage_percent_for_display(language, codex_weekly_pct);
-        let antigravity_session_pct = usage_percent_for_display(language, antigravity_session_pct);
-        let antigravity_weekly_pct = usage_percent_for_display(language, antigravity_weekly_pct);
+        let session_pct = usage_percent_for_display(show_remaining, session_pct);
+        let weekly_pct = usage_percent_for_display(show_remaining, weekly_pct);
+        let codex_session_pct = usage_percent_for_display(show_remaining, codex_session_pct);
+        let codex_weekly_pct = usage_percent_for_display(show_remaining, codex_weekly_pct);
+        let antigravity_session_pct =
+            usage_percent_for_display(show_remaining, antigravity_session_pct);
+        let antigravity_weekly_pct =
+            usage_percent_for_display(show_remaining, antigravity_weekly_pct);
         let (label_width, text_width) = usage_layout_widths(language, appearance);
 
         let client_rect = RECT {
@@ -2991,6 +3062,19 @@ fn position_at_taskbar() {
     };
 
     let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
+    taskbar_widgets::watch(
+        if anchor_left {
+            taskbar_hwnd
+        } else {
+            HWND::default()
+        },
+        hwnd,
+    );
+    let pinned_left = if anchor_left {
+        taskbar_widgets::left_edge(taskbar_hwnd, taskbar_rect, sc(8))
+    } else {
+        taskbar_rect.left
+    };
     let tray_left = tray_left_for_taskbar(taskbar_hwnd, taskbar_rect);
     let anchor_top = taskbar_rect.top;
     let anchor_height = taskbar_height;
@@ -3020,7 +3104,7 @@ fn position_at_taskbar() {
     if embedded {
         // Child window: coordinates relative to parent (taskbar)
         let x = compute_anchor_x(
-            taskbar_rect.left,
+            pinned_left,
             tray_left,
             widget_width,
             tray_offset,
@@ -3034,7 +3118,7 @@ fn position_at_taskbar() {
     } else {
         // Topmost popup: screen coordinates
         let x = compute_anchor_x(
-            taskbar_rect.left,
+            pinned_left,
             tray_left,
             widget_width,
             tray_offset,
@@ -3162,6 +3246,11 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        taskbar_widgets::WM_WIDGETS_CHANGED => {
+            position_at_taskbar();
+            render_layered();
+            LRESULT(0)
+        }
         WM_POWERBROADCAST
             if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize
                 || wparam.0 == PBT_APMRESUMESUSPEND as usize =>
@@ -3570,6 +3659,22 @@ unsafe extern "system" fn wnd_proc(
                     }
                     save_state_settings();
                     render_layered();
+                }
+                IDM_USAGE_USED | IDM_USAGE_REMAINING => {
+                    {
+                        let mut state = lock_state();
+                        if let Some(s) = state.as_mut() {
+                            s.usage_display = if id == IDM_USAGE_REMAINING {
+                                UsageDisplay::Remaining
+                            } else {
+                                UsageDisplay::Used
+                            };
+                            refresh_usage_texts(s);
+                        }
+                    }
+                    save_state_settings();
+                    render_layered();
+                    sync_tray_icons(hwnd);
                 }
                 IDM_SHOW_SESSION_WINDOW | IDM_SHOW_WEEKLY_WINDOW => {
                     {
@@ -4007,6 +4112,43 @@ fn show_context_menu(hwnd: HWND) {
             IDM_SHOW_WEEKLY_WINDOW as usize,
             PCWSTR::from_raw(weekly_label.as_ptr()),
         );
+        let display_remaining = lock_state()
+            .as_ref()
+            .is_some_and(|s| s.usage_display.remaining(s.language));
+        let chinese = language == LanguageId::SimplifiedChinese;
+        let _ = AppendMenuW(usage_menu, MF_SEPARATOR, 0, PCWSTR::null());
+        for (id, checked, label) in [
+            (
+                IDM_USAGE_USED,
+                !display_remaining,
+                if chinese {
+                    "显示已用额度"
+                } else {
+                    "Show usage used"
+                },
+            ),
+            (
+                IDM_USAGE_REMAINING,
+                display_remaining,
+                if chinese {
+                    "显示剩余额度"
+                } else {
+                    "Show usage remaining"
+                },
+            ),
+        ] {
+            let label = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                usage_menu,
+                if checked {
+                    MF_CHECKED
+                } else {
+                    MENU_ITEM_FLAGS(0)
+                },
+                id as usize,
+                PCWSTR::from_raw(label.as_ptr()),
+            );
+        }
         let usage_label = native_interop::wide_str(if language == LanguageId::SimplifiedChinese {
             "显示用量"
         } else {
@@ -4419,6 +4561,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
         is_dark,
         appearance,
         language,
+        show_remaining,
         strings,
         session_pct,
         session_text,
@@ -4444,6 +4587,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
                 s.is_dark,
                 s.appearance,
                 s.language,
+                s.usage_display.remaining(s.language),
                 s.language.strings(),
                 s.session_percent,
                 s.session_text.clone(),
@@ -4497,6 +4641,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
             &accent,
             &track,
             language,
+            show_remaining,
             strings,
             session_pct,
             &session_text,
@@ -4817,6 +4962,57 @@ mod tests {
             }
             ReleaseDC(HWND::default(), hdc);
         }
+    }
+
+    #[test]
+    fn usage_display_choice_is_saved_and_preserves_legacy_defaults() {
+        let legacy: SettingsFile = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.usage_display.remaining(LanguageId::English));
+        assert!(legacy
+            .usage_display
+            .remaining(LanguageId::SimplifiedChinese));
+        for display in [UsageDisplay::Used, UsageDisplay::Remaining] {
+            let settings = SettingsFile {
+                usage_display: display,
+                ..Default::default()
+            };
+            let loaded: SettingsFile =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(loaded.usage_display, display);
+            for language in [LanguageId::English, LanguageId::SimplifiedChinese] {
+                assert_eq!(
+                    loaded.usage_display.remaining(language),
+                    display == UsageDisplay::Remaining
+                );
+            }
+        }
+        assert_eq!(usage_percent_for_display(true, 21.0), 79.0);
+        assert_eq!(usage_percent_for_display(false, 21.0), 21.0);
+    }
+
+    #[test]
+    fn hover_reset_details_include_exact_time_for_visible_windows() {
+        let data = crate::models::UsageData {
+            session: crate::models::UsageSection {
+                percentage: 21.0,
+                resets_at: Some(UNIX_EPOCH + Duration::from_secs(1792000000)),
+            },
+            weekly: crate::models::UsageSection {
+                percentage: 33.0,
+                resets_at: Some(UNIX_EPOCH + Duration::from_secs(1792400000)),
+            },
+        };
+        let weekly_only = reset_tooltip_details(&data, false, true, true);
+        assert!(weekly_only.contains("Showing usage remaining"));
+        assert!(weekly_only.contains(&format!(
+            "Weekly resets: {} (local time)",
+            format_precise_reset_time(data.weekly.resets_at).unwrap()
+        )));
+        assert!(!weekly_only.contains("5-hour resets"));
+        let session_only = reset_tooltip_details(&data, true, false, false);
+        assert!(session_only.contains("Showing usage used"));
+        assert!(session_only.contains("5-hour resets:"));
+        assert!(!session_only.contains("Weekly resets"));
     }
 
     #[test]

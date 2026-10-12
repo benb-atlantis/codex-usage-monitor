@@ -13,6 +13,7 @@ mod quota_tooltip;
 mod recovery_events;
 mod retry_after;
 mod settings_store;
+mod taskbar_widgets;
 mod theme;
 mod tray_icon;
 mod updater;
