@@ -2551,7 +2551,7 @@ fn render_layered() {
             AlphaFormat: 1, // AC_SRC_ALPHA
         };
 
-        let _ = UpdateLayeredWindow(
+        let rendered = UpdateLayeredWindow(
             hwnd,
             screen_dc,
             None,
@@ -2562,6 +2562,9 @@ fn render_layered() {
             Some(&blend),
             ULW_ALPHA,
         );
+        if let Err(error) = rendered {
+            diagnose::log_error("layered widget repaint failed", error);
+        }
 
         // Cleanup
         SelectObject(mem_dc, old_bmp);
@@ -4488,9 +4491,17 @@ fn show_context_menu(hwnd: HWND) {
                 let device = native_interop::taskbar_monitor_device(taskbar)
                     .unwrap_or_else(|| format!("{}", index + 1));
                 let label = if language == LanguageId::SimplifiedChinese {
-                    format!("显示器 {} ({device})", index + 1)
+                    if taskbar.is_primary {
+                        format!("主显示器 ({device})")
+                    } else {
+                        format!("显示器 {} ({device})", index + 1)
+                    }
                 } else {
-                    format!("Display {} ({device})", index + 1)
+                    if taskbar.is_primary {
+                        format!("Main display ({device})")
+                    } else {
+                        format!("Display {} ({device})", index + 1)
+                    }
                 };
                 let wide = native_interop::wide_str(&label);
                 let flags = if selected_taskbar == Some(taskbar.hwnd) {
