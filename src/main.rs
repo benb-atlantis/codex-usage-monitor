@@ -4,6 +4,7 @@ mod diagnose;
 mod localization;
 mod models;
 mod native_interop;
+mod persistent_menu;
 mod poller;
 mod provider_icons;
 mod provider_poll;

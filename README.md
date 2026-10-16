@@ -96,6 +96,8 @@ codex-usage
 
 Once running, it will appear in your taskbar and as one tray icon in the notification area.
 
+New installations default to pinning left, after the weather widget, and displaying usage remaining. Existing saved choices are respected. The right-click menu stays open while changing settings or refreshing, with checkmarks updating immediately. Click outside or press Esc to dismiss it; Exit, visibility, and updater actions close it normally.
+
 - Drag the left divider to move the taskbar widget
 - Choose **Settings → Pin to the left edge of the taskbar** to keep the widget at the left edge instead of next to the tray
 - On multi-monitor setups, choose **Settings → Display** from the right-click menu or drag the widget onto another taskbar. The selection is saved; the primary taskbar is used while the selected display is disconnected, and the widget returns when it reconnects.

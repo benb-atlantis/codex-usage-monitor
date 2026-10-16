@@ -430,9 +430,9 @@ impl Appearance {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum UsageDisplay {
-    #[default]
     Auto,
     Used,
+    #[default]
     Remaining,
 }
 
@@ -446,7 +446,7 @@ impl UsageDisplay {
 struct SettingsFile {
     #[serde(default)]
     tray_offset: i32,
-    #[serde(default)]
+    #[serde(default = "default_anchor_left")]
     anchor_left: bool,
     #[serde(default)]
     taskbar_index: usize,
@@ -486,7 +486,7 @@ impl Default for SettingsFile {
     fn default() -> Self {
         Self {
             tray_offset: 0,
-            anchor_left: false,
+            anchor_left: true,
             taskbar_index: 0,
             monitor_device: None,
             poll_interval_ms: default_poll_interval(),
@@ -500,7 +500,7 @@ impl Default for SettingsFile {
             show_antigravity: false,
             show_session_window: true,
             show_weekly_window: true,
-            usage_display: UsageDisplay::Auto,
+            usage_display: UsageDisplay::Remaining,
             alert_threshold_percent: 0,
             notified_quota_windows: Vec::new(),
         }
@@ -508,6 +508,10 @@ impl Default for SettingsFile {
 }
 
 fn default_adaptive_refresh() -> bool {
+    true
+}
+
+fn default_anchor_left() -> bool {
     true
 }
 
@@ -3300,6 +3304,10 @@ unsafe extern "system" fn wnd_proc(
             quota_tooltip::show();
             LRESULT(0)
         }
+        WM_MENUSELECT => {
+            crate::persistent_menu::select(hwnd, wparam, lparam);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_MOUSELEAVE => {
             quota_tooltip::hide();
             LRESULT(0)
@@ -3985,6 +3993,32 @@ unsafe fn append_appearance_submenu(parent: HMENU, child: HMENU, label: &str) {
 fn show_context_menu(hwnd: HWND) {
     quota_tooltip::hide();
     unsafe {
+        let menu = build_context_menu();
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(hwnd);
+        crate::persistent_menu::track(hwnd, menu, pt, refresh_context_menu, keep_menu_open);
+        let _ = DestroyMenu(menu);
+    }
+}
+
+fn keep_menu_open(id: u16) -> bool {
+    id == 1
+        || ((10..300).contains(&id)
+            && id != IDM_VERSION_ACTION
+            && id != tray_icon::IDM_TOGGLE_WIDGET)
+}
+
+fn refresh_context_menu(menu: HMENU) {
+    unsafe {
+        let fresh = build_context_menu();
+        crate::persistent_menu::refresh(menu, fresh);
+        let _ = DestroyMenu(fresh);
+    }
+}
+
+fn build_context_menu() -> HMENU {
+    unsafe {
         let (
             current_interval,
             strings,
@@ -4630,11 +4664,7 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(exit_str.as_ptr()),
         );
 
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, None);
-        let _ = DestroyMenu(menu);
+        menu
     }
 }
 
@@ -5001,13 +5031,22 @@ mod tests {
     }
 
     #[test]
-    fn usage_display_choice_is_saved_and_preserves_legacy_defaults() {
+    fn usage_display_defaults_to_remaining_and_preserves_saved_choices() {
         let legacy: SettingsFile = serde_json::from_str("{}").unwrap();
-        assert!(!legacy.usage_display.remaining(LanguageId::English));
+        assert!(legacy.usage_display.remaining(LanguageId::English));
         assert!(legacy
             .usage_display
             .remaining(LanguageId::SimplifiedChinese));
-        for display in [UsageDisplay::Used, UsageDisplay::Remaining] {
+        assert_eq!(
+            SettingsFile::default().usage_display,
+            UsageDisplay::Remaining
+        );
+        assert!(SettingsFile::default().anchor_left);
+        for display in [
+            UsageDisplay::Auto,
+            UsageDisplay::Used,
+            UsageDisplay::Remaining,
+        ] {
             let settings = SettingsFile {
                 usage_display: display,
                 ..Default::default()
@@ -5018,7 +5057,7 @@ mod tests {
             for language in [LanguageId::English, LanguageId::SimplifiedChinese] {
                 assert_eq!(
                     loaded.usage_display.remaining(language),
-                    display == UsageDisplay::Remaining
+                    display.remaining(language)
                 );
             }
         }
@@ -5404,7 +5443,11 @@ mod tests {
         assert!(settings.anchor_left);
         assert_eq!(settings.tray_offset, 321);
         let legacy: SettingsFile = serde_json::from_str("{}").unwrap();
-        assert!(!legacy.anchor_left);
+        assert!(legacy.anchor_left);
+        let manual: SettingsFile =
+            serde_json::from_str(r#"{"anchor_left":false,"usage_display":"used"}"#).unwrap();
+        assert!(!manual.anchor_left);
+        assert_eq!(manual.usage_display, UsageDisplay::Used);
     }
 
     #[test]
